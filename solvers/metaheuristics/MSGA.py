@@ -1,6 +1,7 @@
 import networkx as nx
 import time
 import random
+import copy
 
 def MSGA_MEDP(graph : nx.Graph, commodity_pairs : list[tuple[int, int]], n_iter : int, max_time_s : int = 3600) -> int:
     '''
@@ -21,7 +22,7 @@ def MSGA_MEDP(graph : nx.Graph, commodity_pairs : list[tuple[int, int]], n_iter 
         current_paths : dict[tuple[int, int], list[int]] = {}
 
         random.shuffle(commodity_pairs)
-        current_graph = graph.copy()
+        current_graph = copy.deepcopy(graph)
 
         for start, end in commodity_pairs:
             try:

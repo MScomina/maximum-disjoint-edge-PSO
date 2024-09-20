@@ -2,6 +2,7 @@ import networkx as nx
 import random
 import time
 import copy
+import numpy as np
 
 # Hyperparameters
 VELOCITY_FACTOR = 0.1
@@ -13,7 +14,7 @@ SWARM_SIZE = 8
 
 # Constraints
 MAX_SECONDS = 3600
-MAXITER = 30000
+MAXITER = 30
 LBC = 10
 
 HEURISTIC_TYPE = "LVP"
@@ -23,7 +24,7 @@ HEURISTIC_TYPES = ["RAND", "LVA", "LVP"]
 
 def LaPSO_MEDP(graph : nx.Graph, commodity_pairs : list[tuple[int, int]], max_seconds : int = MAX_SECONDS, max_iterations : int = MAXITER,
                velocity_factor : float = VELOCITY_FACTOR, global_factor : float = GLOBAL_FACTOR, subgradient_factor : float = SUBGRADIENT_FACTOR,
-               perturbation_factor : float = PERTURBATION_FACTOR, beta_subg_factor : float = BETA_SUBG_FACTOR, swarm_size : int = SWARM_SIZE) -> int:
+               perturbation_factor : float = PERTURBATION_FACTOR, beta_subg_factor : float = BETA_SUBG_FACTOR, swarm_size : int = SWARM_SIZE) -> list[list[int]]:
     
     particles = initialize_particles(
         graph=graph, 
@@ -40,7 +41,8 @@ def LaPSO_MEDP(graph : nx.Graph, commodity_pairs : list[tuple[int, int]], max_se
         "best_particle" : particles[0],
         "lower_bound" : -float("inf"),
         "upper_bound" : float("inf"),
-        "iteration" : 0
+        "iteration" : 0,
+        "best_solution" : None
     }
 
     start_time = time.time()
@@ -53,17 +55,20 @@ def LaPSO_MEDP(graph : nx.Graph, commodity_pairs : list[tuple[int, int]], max_se
             parameters=parameters
         )
         parameters["iteration"] += 1
+        print(f"Iteration {parameters['iteration']} - Best solution: {parameters['lower_bound']}-{parameters['upper_bound']})")
+
+    return parameters["best_solution"]
 
 
 def particle_swarm_step(graph : nx.Graph, commodity_pairs : list[tuple[int, int]], particles : list[dict], parameters : dict) -> list[dict]:
 
     for particle in particles:
-        relaxed_base_graph = generate_base_relaxed_graph(graph, particle["lambda"])
+        relaxed_base_graph = generate_base_relaxed_graph(particle, commodity_pairs)
         commodity_sum = 0
 
         # Initialize the subgradient to all 1s on existing edges
         subgradient = {}
-        for edge in relaxed_base_graph.edges:
+        for edge in graph.edges:
             subgradient[edge] = 1.0
 
         paths = []
@@ -85,7 +90,10 @@ def particle_swarm_step(graph : nx.Graph, commodity_pairs : list[tuple[int, int]
 
             # Update the subgradient of constraint (6): sum_k (x_ijk) <= 1, or "each edge can be used at most once"
             for i in range(len(path) - 1):
-                subgradient[(path[i], path[i+1])] -= 1.0
+                if (path[i], path[i+1]) in subgradient:
+                    subgradient[(path[i], path[i+1])] -= 1.0
+                else:
+                    subgradient[(path[i+1], path[i])] -= 1.0
 
             # Compute the length of the best path. length will always be less than or equal to 1 because of the graph structure (worst case scenario the path is the extra added edge).
             commodity_sum += length
@@ -114,10 +122,13 @@ def particle_swarm_step(graph : nx.Graph, commodity_pairs : list[tuple[int, int]
             if connected_commodities < parameters["upper_bound"]:
                 parameters["upper_bound"] = connected_commodities
                 parameters["best_particle"] = particle
+                parameters["best_path"] = paths
 
-        # Updates to velocities and positions are still missing, so that's what's left to do.
+        update_particle(particle, parameters, subgradient, paths)
 
-def initialize_particles(graph : nx.Graph, n_commodities : int, n_particles : int, subgradient_factor : float = SUBGRADIENT_FACTOR) -> list[dict]:
+    return particles
+
+def initialize_particles(graph : nx.Graph, n_commodities : int, swarm_size : int, subgradient_factor : float = SUBGRADIENT_FACTOR) -> list[dict]:
     '''
         Initializes the particles as a list of dictionaries, where each dictionary (particle) contains the following:
         - lambda: edge weights of the graph.
@@ -129,7 +140,7 @@ def initialize_particles(graph : nx.Graph, n_commodities : int, n_particles : in
     '''
     particles = []
 
-    for _ in range(n_particles):
+    for _ in range(swarm_size):
 
         lambda_values = {}
         lambda_velocities = {}
@@ -148,7 +159,7 @@ def initialize_particles(graph : nx.Graph, n_commodities : int, n_particles : in
             "lambda_velocity" : lambda_velocities,
             "perturbation_velocity" : perturbation_velocities,
             "subgradient_factor": subgradient_factor,
-            "lower_bound": 0.0,
+            "lower_bound": -float("inf"),
             "iterations_since_bound_update": 0
         })
 
@@ -180,6 +191,23 @@ def generate_perturbed_graph(graph : nx.MultiGraph, particle : dict, commodity_n
     return perturbed_graph
 
 
+def path_dict_creator(paths : list[list[int]]) -> dict[tuple[int, int], int]:
+    '''
+        Given a list of paths, creates a dictionary where the keys are the edges and the values are the number of times the edge is used in the paths.
+    '''
+    edge_dict = {}
+
+    for path in paths:
+        for i in range(len(path) - 1):
+            edge = (path[i], path[i+1])
+            if edge in edge_dict:
+                edge_dict[edge] += 1
+            else:
+                edge_dict[edge] = 1
+
+    return edge_dict
+
+
 def feasibility_check(paths : list[list[int]]) -> list[int]:
     '''
         Given a list of paths, checks for the number of infractions (same edge used more than once) for each path.
@@ -189,16 +217,7 @@ def feasibility_check(paths : list[list[int]]) -> list[int]:
         If the paths are [[0, 1, 2, 3], [1, 2, 4, 5], [4, 5, 6]], the resulting output will be [1, 2, 1] (the number of infractions for each path), 
         since paths 1 and 2 both use the edge (1, 2) and paths 2 and 3 both use the edge (4, 5).
     '''
-    pairs_count = {}
-
-    # Add the pairs to the dictionary
-    for path in paths:
-        for i in range(len(path) - 1):
-            edge = (path[i], path[i+1])
-            if edge in pairs_count:
-                pairs_count[edge] += 1
-            else:
-                pairs_count[edge] = 1
+    pairs_count = path_dict_creator(paths)
 
     infractions = [0 for _ in range(len(paths))]
 
@@ -271,3 +290,30 @@ def repair_heuristic(graph : nx.Graph, paths : list[list[int]], infractions : li
             indices_with_infractions.remove(picked_commodity_idx)
 
     return repaired_paths
+
+
+def update_particle(particle : dict, parameters : dict, subgradient : dict, paths : list[list[int]]) -> dict:
+    '''
+        Updates the velocities of the particle's lambda values and perturbations.
+    '''
+    random_factor_l, random_factor_g = random.random(), random.random()
+
+    path_dict = path_dict_creator(paths)
+    
+    for edge in particle["lambda"].keys():
+        particle["lambda_velocity"][edge] = (parameters["velocity_factor"] * particle["lambda_velocity"][edge]) + \
+            (random_factor_l * particle["subgradient_factor"] * (parameters["upper_bound"] - parameters["lower_bound"]) * subgradient[edge] / float(np.linalg.norm(list(subgradient.values())))) + \
+            (random_factor_g * parameters["global_factor"] * (parameters["best_particle"]["lambda"][edge] - particle["lambda"][edge]))
+        
+        # There's currently an issue with the lambda velocities, as they are negative and they cause the lambda values to go negative.
+
+        particle["lambda"][edge] += particle["lambda_velocity"][edge]
+        
+        for i in range(len(particle["perturbation"][edge])):
+            particle["perturbation_velocity"][edge][i] = (parameters["velocity_factor"] * particle["perturbation_velocity"][edge][i]) + \
+                (random_factor_g * parameters["global_factor"] * (parameters["best_particle"]["perturbation"][edge][i] - particle["perturbation"][edge][i])) + \
+                (parameters["perturbation_factor"] * random_factor_g * parameters["global_factor"] * (-1.0 if edge in path_dict and path_dict[edge] > 0 else 1.0))
+            
+            particle["perturbation"][edge][i] += 0.5 * particle["perturbation_velocity"][edge][i]
+
+    return particle
