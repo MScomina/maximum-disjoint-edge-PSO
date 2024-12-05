@@ -3,6 +3,7 @@ import random
 import time
 import copy
 import numpy as np
+import concurrent.futures
 
 # Hyperparameters
 VELOCITY_FACTOR = 0.1
@@ -10,21 +11,24 @@ GLOBAL_FACTOR = 0.05
 SUBGRADIENT_FACTOR = 2
 BETA_SUBG_FACTOR = 0.9
 PERTURBATION_FACTOR = 0.5
-SWARM_SIZE = 8
+SWARM_SIZE = 16
+EPSILON = 0.01
 
 # Constraints
-MAX_SECONDS = 3600
-MAXITER = 30
+MAX_SECONDS = 3600*6
+MAXITER = 1000
 LBC = 10
 
-HEURISTIC_TYPE = "LVP"
+HEURISTIC_TYPE = "LVA"
 HEURISTIC_TYPES = ["RAND", "LVA", "LVP"]
+
+PARALLEL = True
 
 # Lagrangian relaxed function: min λ>=0 LR(λ) = sum_((i,j) in E)(λ_ij) + |K| - sum_(k in K)(min{1, min_(s_k->t_k path P_k)(sum_(i,j) in P_k)(λ_ij)})
 
 def LaPSO_MEDP(graph : nx.Graph, commodity_pairs : list[tuple[int, int]], max_seconds : int = MAX_SECONDS, max_iterations : int = MAXITER,
                velocity_factor : float = VELOCITY_FACTOR, global_factor : float = GLOBAL_FACTOR, subgradient_factor : float = SUBGRADIENT_FACTOR,
-               perturbation_factor : float = PERTURBATION_FACTOR, beta_subg_factor : float = BETA_SUBG_FACTOR, swarm_size : int = SWARM_SIZE) -> list[list[int]]:
+               perturbation_factor : float = PERTURBATION_FACTOR, beta_subg_factor : float = BETA_SUBG_FACTOR, swarm_size : int = SWARM_SIZE) -> tuple[int, dict]:
     
     particles = initialize_particles(
         graph=graph, 
@@ -39,15 +43,16 @@ def LaPSO_MEDP(graph : nx.Graph, commodity_pairs : list[tuple[int, int]], max_se
         "beta_subg_factor" : beta_subg_factor,
         "perturbation_factor" : perturbation_factor,
         "best_particle" : particles[0],
-        "lower_bound" : -float("inf"),
-        "upper_bound" : float("inf"),
+        "lower_bound" : float("inf"),
+        "upper_bound" : -float("inf"),
         "iteration" : 0,
-        "best_solution" : None
+        "best_solution" : None,
+        "best_path" : []
     }
 
     start_time = time.time()
 
-    while time.time() - start_time < max_seconds and parameters["iteration"] < max_iterations:
+    while time.time() - start_time < max_seconds and parameters["iteration"] < max_iterations and (parameters["iteration"] == 0 or abs((parameters["upper_bound"]-parameters["lower_bound"])/parameters["upper_bound"]) > EPSILON):
         particles = particle_swarm_step(
             graph=graph, 
             commodity_pairs=commodity_pairs, 
@@ -55,31 +60,29 @@ def LaPSO_MEDP(graph : nx.Graph, commodity_pairs : list[tuple[int, int]], max_se
             parameters=parameters
         )
         parameters["iteration"] += 1
-        print(f"Iteration {parameters['iteration']} - Best solution: {parameters['lower_bound']}-{parameters['upper_bound']})")
+        print(f"Iteration {parameters['iteration']} - Best solution: {parameters['lower_bound']}-{parameters['upper_bound']}) - Time elapsed: {time.time() - start_time}")
 
-    return parameters["best_solution"]
+    output = {}
+    for commodity, (source, target) in enumerate(commodity_pairs):
+        output[(source, target)] = parameters["best_path"][commodity]
+    return (parameters["upper_bound"], output)
 
 
-def particle_swarm_step(graph : nx.Graph, commodity_pairs : list[tuple[int, int]], particles : list[dict], parameters : dict) -> list[dict]:
+def process_particle(graph, commodity_pairs, particle, parameters):
+    relaxed_base_graph = generate_base_relaxed_graph(particle)
+    commodity_sum = 0
 
-    for particle in particles:
-        relaxed_base_graph = generate_base_relaxed_graph(particle, commodity_pairs)
-        commodity_sum = 0
+    # Initialize the subgradient to all 1s on existing edges
+    subgradient = {edge: 1.0 for edge in graph.edges}
+    paths = []
 
-        # Initialize the subgradient to all 1s on existing edges
-        subgradient = {}
-        for edge in graph.edges:
-            subgradient[edge] = 1.0
-
-        paths = []
-
-        for commodity, (source, target) in enumerate(commodity_pairs):
-
-            if parameters["iteration"] % LBC == 0:
-                relaxed_perturbed_graph = copy.deepcopy(relaxed_base_graph)
-            else:
-                relaxed_perturbed_graph = generate_perturbed_graph(relaxed_base_graph, particle, commodity)
-
+    for commodity, (source, target) in enumerate(commodity_pairs):
+        if parameters["iteration"] % LBC == 0:
+            relaxed_perturbed_graph = nx.Graph()
+            relaxed_perturbed_graph.add_edges_from(relaxed_base_graph.edges(data=True))
+        else:
+            relaxed_perturbed_graph = generate_perturbed_graph(relaxed_base_graph, particle, commodity)
+        try:
             length, path = nx.single_source_dijkstra(
                 relaxed_perturbed_graph, 
                 source, 
@@ -87,46 +90,83 @@ def particle_swarm_step(graph : nx.Graph, commodity_pairs : list[tuple[int, int]
                 weight="weight", 
                 cutoff=1.0
             )
+        except nx.NetworkXNoPath:
+            # No path found, rerouting to the alternative edge.
+            length = 1.0
+            path = []
 
-            # Update the subgradient of constraint (6): sum_k (x_ijk) <= 1, or "each edge can be used at most once"
-            for i in range(len(path) - 1):
-                if (path[i], path[i+1]) in subgradient:
-                    subgradient[(path[i], path[i+1])] -= 1.0
-                else:
-                    subgradient[(path[i+1], path[i])] -= 1.0
+        # No path shorter than 1 has been found, rerouting to the alternative edge.
+        if length == float("inf"):
+            length = 1.0
+            path = []
 
-            # Compute the length of the best path. length will always be less than or equal to 1 because of the graph structure (worst case scenario the path is the extra added edge).
-            commodity_sum += length
-            paths.append(path)
+        # Update the subgradient of constraint (6)
+        for i in range(len(path) - 1):
+            if (path[i], path[i+1]) in subgradient:
+                subgradient[(path[i], path[i+1])] -= 1.0
+            elif (path[i+1], path[i]) in subgradient:
+                subgradient[(path[i+1], path[i])] -= 1.0
 
-        # Compute the relaxed value of the particle
-        current_relaxed_solution = sum(particle["lambda"].values()) + len(commodity_pairs) - commodity_sum
-        particle["iterations_since_bound_update"] += 1
+        commodity_sum += length
+        paths.append(path)
 
-        if current_relaxed_solution > particle["lower_bound"]:
-            particle["lower_bound"] = current_relaxed_solution
-            particle["iterations_since_bound_update"] = 0
-        elif particle["iterations_since_bound_update"] >= LBC:
-            particle["subgradient_factor"] *= parameters["beta_subg_factor"]
-            particle["iterations_since_bound_update"] = 0
+    perturbation_offset = min(min(perturbation_list[commodity] for perturbation_list in particle["perturbation"].values()), 0)
+    current_relaxed_solution = sum(particle["lambda"].values()) + (0 if parameters["iteration"] % LBC == 0 else sum(perturbation[commodity]-perturbation_offset for perturbation in particle["perturbation"].values())) + len(commodity_pairs) - commodity_sum
+    particle["iterations_since_bound_update"] += 1
 
-        if current_relaxed_solution > parameters["lower_bound"]:
-            parameters["lower_bound"] = current_relaxed_solution
+    if current_relaxed_solution < particle["lower_bound"]:
+        particle["lower_bound"] = current_relaxed_solution
+        particle["iterations_since_bound_update"] = 0
+    elif particle["iterations_since_bound_update"] >= LBC:
+        particle["subgradient_factor"] *= parameters["beta_subg_factor"]
+        particle["iterations_since_bound_update"] = 0
+
+    if current_relaxed_solution < parameters["lower_bound"]:
+        parameters["lower_bound"] = current_relaxed_solution
+
+    infractions = feasibility_check(paths)
+    if sum(infractions) > 0:
+        paths = repair_heuristic(graph, paths, infractions, particle["perturbation"])
+
+    if sum(feasibility_check(paths)) == 0:
+        connected_commodities = sum(1 for path in paths if len(path) > 0)
+        if connected_commodities > parameters["upper_bound"]:
+            parameters["upper_bound"] = connected_commodities
+            parameters["best_particle"] = particle
+            parameters["best_path"] = paths
+
+    update_particle(particle, parameters, subgradient, paths)
+    
+    return particle, parameters
+
+def particle_swarm_step(graph, commodity_pairs, particles, parameters, parallel=PARALLEL):
+    if parallel:
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            futures = [executor.submit(process_particle, graph, commodity_pairs, particle, parameters) for particle in particles]
+            results = [future.result() for future in concurrent.futures.as_completed(futures)]
         
-        infractions = feasibility_check(paths)
-        if sum(infractions) > 0:
-            paths = repair_heuristic(graph, paths, infractions, particle["perturbation"])
-        
-        if sum(feasibility_check(paths)) == 0:
-            connected_commodities = sum(1 for path in paths if len(path) > 0)
-            if connected_commodities < parameters["upper_bound"]:
-                parameters["upper_bound"] = connected_commodities
-                parameters["best_particle"] = particle
-                parameters["best_path"] = paths
+        # Extract updated particles and parameters
+        updated_particles = [result[0] for result in results]
+        updated_parameters_list = [result[1] for result in results]
+    else:
+        updated_particles = []
+        updated_parameters_list = []
+        for particle in particles:
+            updated_particle, updated_parameters = process_particle(graph, commodity_pairs, particle, parameters)
+            updated_particles.append(updated_particle)
+            updated_parameters_list.append(updated_parameters)
 
-        update_particle(particle, parameters, subgradient, paths)
+    # Aggregate changes to parameters
+    for updated_parameters in updated_parameters_list:
+        if updated_parameters["lower_bound"] < parameters["lower_bound"]:
+            parameters["lower_bound"] = updated_parameters["lower_bound"]
+        if updated_parameters["upper_bound"] > parameters["upper_bound"]:
+            parameters["upper_bound"] = updated_parameters["upper_bound"]
+            parameters["best_particle"] = updated_parameters["best_particle"]
+            parameters["best_path"] = updated_parameters["best_path"]
 
-    return particles
+    return updated_particles
+
 
 def initialize_particles(graph : nx.Graph, n_commodities : int, swarm_size : int, subgradient_factor : float = SUBGRADIENT_FACTOR) -> list[dict]:
     '''
@@ -159,34 +199,32 @@ def initialize_particles(graph : nx.Graph, n_commodities : int, swarm_size : int
             "lambda_velocity" : lambda_velocities,
             "perturbation_velocity" : perturbation_velocities,
             "subgradient_factor": subgradient_factor,
-            "lower_bound": -float("inf"),
+            "lower_bound": float("inf"),
             "iterations_since_bound_update": 0
         })
 
     return particles
 
 
-# Note: the graph has to be a MultiGraph because of the potential case of having 
-# the source and destination nodes already connected and having to add the weight 1 edge as per paper description.
-def generate_base_relaxed_graph(particle : dict, commodity_pairs : list[tuple[int, int]]) -> nx.MultiGraph:
+def generate_base_relaxed_graph(particle : dict) -> nx.Graph:
 
-    relaxed_base_graph = nx.MultiGraph()
-    
-    for edge in commodity_pairs:
-        relaxed_base_graph.add_edge(edge[0], edge[1], weight=1.0, key="alternative")
+    relaxed_base_graph = nx.Graph()
 
     for edge in particle["lambda"].keys():
-        relaxed_base_graph.add_edge(edge[0], edge[1], weight=particle["lambda"][edge], key="lambda")
+        relaxed_base_graph.add_edge(edge[0], edge[1], weight=particle["lambda"][edge])
 
     return relaxed_base_graph
 
 
-def generate_perturbed_graph(graph : nx.MultiGraph, particle : dict, commodity_number : int) -> nx.MultiGraph:
+def generate_perturbed_graph(graph : nx.Graph, particle : dict, commodity_number : int) -> nx.Graph:
 
-    perturbed_graph = copy.deepcopy(graph)
+    perturbed_graph = nx.Graph()
+    perturbed_graph.add_edges_from(graph.edges(data=True))
+
+    perturbation_offset = min(min(perturbation_list[commodity_number] for perturbation_list in particle["perturbation"].values()), 0)
 
     for edge in particle["lambda"].keys():
-        perturbed_graph[edge[0]][edge[1]]["lambda"]["weight"] += particle["perturbation"][edge][commodity_number]
+        perturbed_graph[edge[0]][edge[1]]["weight"] += particle["perturbation"][edge][commodity_number] - perturbation_offset
 
     return perturbed_graph
 
@@ -204,6 +242,11 @@ def path_dict_creator(paths : list[list[int]]) -> dict[tuple[int, int], int]:
                 edge_dict[edge] += 1
             else:
                 edge_dict[edge] = 1
+            edge_reversed = (path[i+1], path[i])
+            if edge_reversed in edge_dict:
+                edge_dict[edge_reversed] += 1
+            else:
+                edge_dict[edge_reversed] = 1
 
     return edge_dict
 
@@ -276,6 +319,8 @@ def repair_heuristic(graph : nx.Graph, paths : list[list[int]], infractions : li
             for j in range(len(path) - 1):
                 if (path[j], path[j+1]) in current_graph.edges:
                     current_graph.remove_edge(path[j], path[j+1])
+                elif (path[j+1], path[j]) in current_graph.edges:
+                    current_graph.remove_edge(path[j+1], path[j])
 
         try:
             if heuristic_type == "LVP":
@@ -301,19 +346,19 @@ def update_particle(particle : dict, parameters : dict, subgradient : dict, path
     path_dict = path_dict_creator(paths)
     
     for edge in particle["lambda"].keys():
-        particle["lambda_velocity"][edge] = (parameters["velocity_factor"] * particle["lambda_velocity"][edge]) + \
-            (random_factor_l * particle["subgradient_factor"] * (parameters["upper_bound"] - parameters["lower_bound"]) * subgradient[edge] / float(np.linalg.norm(list(subgradient.values())))) + \
-            (random_factor_g * parameters["global_factor"] * (parameters["best_particle"]["lambda"][edge] - particle["lambda"][edge]))
+        first_factor = parameters["velocity_factor"] * particle["lambda_velocity"][edge]
+        second_factor = random_factor_l * particle["subgradient_factor"] * (parameters["upper_bound"] - parameters["lower_bound"]) * subgradient[edge] / float(np.linalg.norm(list(subgradient.values())))
+        third_factor = random_factor_g * parameters["global_factor"] * (parameters["best_particle"]["lambda"][edge] - particle["lambda"][edge])
         
-        # There's currently an issue with the lambda velocities, as they are negative and they cause the lambda values to go negative.
-
-        particle["lambda"][edge] += particle["lambda_velocity"][edge]
+        particle["lambda_velocity"][edge] = first_factor + second_factor + third_factor
+        particle["lambda"][edge] = max(0, particle["lambda"][edge] + particle["lambda_velocity"][edge])
         
         for i in range(len(particle["perturbation"][edge])):
             particle["perturbation_velocity"][edge][i] = (parameters["velocity_factor"] * particle["perturbation_velocity"][edge][i]) + \
                 (random_factor_g * parameters["global_factor"] * (parameters["best_particle"]["perturbation"][edge][i] - particle["perturbation"][edge][i])) + \
                 (parameters["perturbation_factor"] * random_factor_g * parameters["global_factor"] * (-1.0 if edge in path_dict and path_dict[edge] > 0 else 1.0))
             
-            particle["perturbation"][edge][i] += 0.5 * particle["perturbation_velocity"][edge][i]
+            particle["perturbation"][edge][i] *= 0.5
+            particle["perturbation"][edge][i] += particle["perturbation_velocity"][edge][i]
 
     return particle

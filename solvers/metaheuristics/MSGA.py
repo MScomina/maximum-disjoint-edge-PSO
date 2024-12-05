@@ -3,7 +3,7 @@ import time
 import random
 import copy
 
-def MSGA_MEDP(graph : nx.Graph, commodity_pairs : list[tuple[int, int]], n_iter : int, max_time_s : int = 3600) -> int:
+def MSGA_MEDP(graph : nx.Graph, commodity_pairs : list[tuple[int, int]], n_iter : int, max_time_s : int = 3600) -> tuple[int, dict]:
     '''
         Multi-Stage Genetic Algorithm for the Minimum Edge Disjoint Paths problem.
     '''

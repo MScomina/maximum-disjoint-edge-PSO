@@ -25,7 +25,10 @@ def get_graph_info(graph : nx.DiGraph) -> dict[str, int | float | tuple]:
     '''
 
     #   For some reason the paper only counts outward edges for degrees.
-    degrees = dict(graph.out_degree())
+    if type(graph) == nx.DiGraph:
+        degrees = dict(graph.out_degree())
+    else:
+        degrees = dict(graph.degree())
     
     return {
         "nodes": graph.number_of_nodes(),
