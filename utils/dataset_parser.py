@@ -1,18 +1,13 @@
 import networkx as nx
+import rustworkx as rw
 import os
 import pandas as pd
-import numpy as np
 
 EDGE_WEIGHTS = 1
 
-#
-#   For some reason the paper, despite mentioning "undirected graphs", calculates some metrics based on direction.
-#   Because of that, everything is generated as a directed graph and transformed to undirected when required.
-#
-
-def load_graph(file_path : str) -> nx.DiGraph | None:
+def load_graph(file_path : str) -> rw.PyGraph | None:
     '''
-        Loads a single graph from a specific file path. Supported types: .csv, .bb
+        Loads a single graph from a specific file path.
     '''
     graph = nx.DiGraph()
     file_extension = os.path.splitext(file_path)[1]
@@ -41,7 +36,11 @@ def load_graph(file_path : str) -> nx.DiGraph | None:
         mapping = {old_label: new_label for new_label, old_label in enumerate(old_mapping)}
     graph = nx.relabel_nodes(graph, mapping)
     
-    return graph
+    rw_graph = rw.PyDiGraph()
+    rw_graph = rw.networkx_converter(graph)
+    rw_graph = rw_graph.to_undirected()
+
+    return rw_graph
 
 def load_all_graphs(folder_path : str) -> list[nx.DiGraph]:
     '''
