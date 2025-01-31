@@ -4,12 +4,12 @@ import random
 import copy
 import rustworkx as rw
 
-MAX_TIME = 3600*8
+MAX_SECONDS = 3600*8
 MAX_ITER = 2500
 
-def MSGA_MEDP(graph : rw.PyGraph, commodity_pairs : list[tuple[int, int]], n_iter : int = MAX_ITER, max_time_s : int = MAX_TIME) -> tuple[int, dict]:
+def MSGA_MEDP(graph : rw.PyGraph, commodity_pairs : list[tuple[int, int]], n_iter : int = MAX_ITER, max_seconds : int = MAX_SECONDS) -> tuple[int, dict]:
     '''
-        Multi-Stage Genetic Algorithm for the Minimum Edge Disjoint Paths problem.
+        Multiple Start Greedy Algorithm for the Minimum Edge Disjoint Paths problem.
     '''
     if type(graph) == rw.PyDiGraph:
         graph = graph.to_undirected()
@@ -20,7 +20,7 @@ def MSGA_MEDP(graph : rw.PyGraph, commodity_pairs : list[tuple[int, int]], n_ite
     start_time = time.time()
     iter_count = 0
 
-    while time.time() - start_time < max_time_s and iter_count < n_iter:
+    while time.time() - start_time < max_seconds and iter_count < n_iter:
 
         current_solution : int = 0
         current_paths : dict[tuple[int, int], list[int]] = {}

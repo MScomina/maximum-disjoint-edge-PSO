@@ -7,14 +7,14 @@ import copy
 from math import exp
 
 # Hyperparameters
-GLOBAL_FACTOR = 0.1
+GLOBAL_FACTOR = 0.05
 SUBGRADIENT_FACTOR = 2.0
 BETA_SUBG_FACTOR = 0.9
 PERTURBATION_FACTOR = 0.5
 
-INITIAL_VELOCITY_FACTOR = 0.75
+INITIAL_VELOCITY_FACTOR = 0.1
 FINAL_VELOCITY_FACTOR = 0.1
-VELOCITY_DECAY = 0.0025
+VELOCITY_DECAY = 0.01
 
 PERTURBATION_DECAY = 0.5
 
@@ -28,6 +28,9 @@ LBC = 10
 
 HEURISTIC_TYPE = "LVP"
 HEURISTIC_TYPES = ["RAND", "LVA", "LVP"]
+
+SHOULD_PRINT = True
+PRINT_FREQUENCY = 1
 
 PARALLEL = True
 
@@ -59,8 +62,8 @@ def LaPSO_MEDP(graph : rw.PyGraph, commodity_pairs : list[tuple[int, int]], max_
         "beta_subg_factor" : beta_subg_factor,
         "perturbation_factor" : perturbation_factor,
         "best_particle" : particles[0],
-        "lower_bound" : float("inf"),
-        "upper_bound" : -float("inf"),
+        "lower_bound" : len(commodity_pairs),
+        "upper_bound" : 0,
         "iteration" : 0,
         "best_solution" : None,
         "best_path" : []
@@ -68,7 +71,10 @@ def LaPSO_MEDP(graph : rw.PyGraph, commodity_pairs : list[tuple[int, int]], max_
 
     start_time = time.time()
 
-    while time.time() - start_time < max_seconds and parameters["iteration"] < max_iterations and (parameters["iteration"] == 0 or abs((parameters["upper_bound"]-int(parameters["lower_bound"]))/parameters["upper_bound"]) > EPSILON):
+    while time.time() - start_time < max_seconds \
+        and parameters["iteration"] < max_iterations \
+        and (parameters["iteration"] == 0 or abs((parameters["upper_bound"]-int(parameters["lower_bound"]))/(parameters["upper_bound"]+1e-6)) > EPSILON):
+        
         particles = _particle_swarm_step(
             graph=graph, 
             commodity_pairs=commodity_pairs, 
@@ -76,7 +82,9 @@ def LaPSO_MEDP(graph : rw.PyGraph, commodity_pairs : list[tuple[int, int]], max_
             parameters=parameters
         )
         parameters["iteration"] += 1
-        print(f"Iteration {parameters['iteration']} - Best solution: {parameters['upper_bound']}-{int(parameters['lower_bound'])}) - Time elapsed: {time.time() - start_time}")
+        if SHOULD_PRINT:
+            if (parameters["iteration"]+1) % PRINT_FREQUENCY == 0:
+                print(f"Iteration {parameters['iteration']} - Best solution: {parameters['upper_bound']}-{int(parameters['lower_bound'])}) - Time elapsed: {time.time() - start_time}")
 
     output = {}
     for commodity, (source, target) in enumerate(commodity_pairs):
@@ -93,9 +101,7 @@ def _process_particle(graph : rw.PyGraph, commodity_pairs, particle, parameters)
     paths = []
 
     for commodity, (source, target) in enumerate(commodity_pairs):
-        if parameters["iteration"] % LBC == 0:
-            _update_graph_weights(relaxed_base_graph, particle, commodity, perturbated=False)
-        else:
+        if parameters["iteration"] % LBC != 0:
             _update_graph_weights(relaxed_base_graph, particle, commodity, perturbated=True)
         try:
             path = rw.dijkstra_shortest_paths(
@@ -105,16 +111,14 @@ def _process_particle(graph : rw.PyGraph, commodity_pairs, particle, parameters)
                 weight_fn=lambda edge: edge["weight"]
             )[target]
             length = sum(relaxed_base_graph.get_edge_data(edge[0], edge[1])["weight"] for edge in zip(path[:-1], path[1:]))
+            
+            # No path shorter than 1.0 found, rerouting to the alternative edge.
             if length > 1.0:
                 length = 1.0
                 path = []
+
         except rw.NoPathFound:
             # No path found, rerouting to the alternative edge.
-            length = 1.0
-            path = []
-
-        # No path shorter than 1 found, rerouting to the alternative edge.
-        if length == float("inf"):
             length = 1.0
             path = []
 
@@ -128,10 +132,11 @@ def _process_particle(graph : rw.PyGraph, commodity_pairs, particle, parameters)
         commodity_sum += length
         paths.append(path)
 
+    # Equation (11) of the paper, which is the lower bound of the relaxed minimization problem.
     perturbation_offset = min(min(perturbation_list[commodity] for perturbation_list in particle["perturbation"].values()), 0)
     lambda_sum = sum(particle["lambda"].values())
     perturbation_sum = 0 if parameters["iteration"] % LBC == 0 else sum(perturbation[commodity] - perturbation_offset for perturbation in particle["perturbation"].values())
-    current_relaxed_solution = lambda_sum + perturbation_sum + len(commodity_pairs) - commodity_sum
+    current_relaxed_solution = (lambda_sum + perturbation_sum) + len(commodity_pairs) - commodity_sum
 
     particle["iterations_since_bound_update"] += 1
 
@@ -229,7 +234,7 @@ def _initialize_particles(graph : rw.PyGraph, n_commodities : int, swarm_size : 
             "perturbation_velocity" : perturbation_velocities,
             "subgradient_factor": subgradient_factor,
             "lower_bound": float("inf"),
-            "upper_bound": -float("inf"),
+            "upper_bound": 0,
             "iterations_since_bound_update": 0
         })
 
@@ -240,7 +245,7 @@ def _generate_base_relaxed_graph(particle : dict) -> rw.PyGraph:
     '''
         Generates the base relaxed graph for the particle, where the edge weights are the lambda values of the particle.
     '''
-    relaxed_base_graph = rw.PyGraph()
+    relaxed_base_graph = rw.PyGraph(multigraph=False)
     for edge in _edge_generator(particle):
         relaxed_base_graph.extend_from_weighted_edge_list([(edge[0], edge[1], {"weight" : particle["lambda"][edge]})])
 
@@ -338,20 +343,13 @@ def _repair_heuristic(graph : rw.PyGraph, paths : list[list[int]], infractions :
         computation is faster than just copying the graph over and over for big graphs.
     '''
     current_path = []
-    stripped_graph = rw.PyGraph()
+    stripped_graph = rw.PyGraph(multigraph=False)
     stripped_graph.extend_from_weighted_edge_list([(u, v, {"weight": 1.0}) for u, v in graph.edge_list()])
-
-    edge_set = set(graph.edge_list())
-    original_edge_set = edge_set.copy()
 
     for path in repaired_paths:
         for u, v in zip(path[:-1], path[1:]):
-            if (u, v) in edge_set:
+            if stripped_graph.has_edge(u, v):
                 stripped_graph.remove_edge(u, v)
-                edge_set.remove((u, v))
-            elif (v, u) in edge_set:
-                stripped_graph.remove_edge(v, u)
-                edge_set.remove((v, u))
     
     # Generate the list of indices of commodities with infractions, sorted by the number of infractions
     indices_with_infractions = [i for i, infraction in enumerate(infractions) if infraction > 0]
@@ -371,12 +369,8 @@ def _repair_heuristic(graph : rw.PyGraph, paths : list[list[int]], infractions :
         for i in range(len(current_path) - 1):
             edge = (current_path[i], current_path[i+1])
             if pairs_count[edge] == 1:
-                if edge in original_edge_set:
+                if graph.has_edge(edge[0], edge[1]):
                     stripped_graph.add_edge(edge[0], edge[1], {"weight": 1.0})
-                    edge_set.add(edge)
-                elif (edge[1], edge[0]) in original_edge_set:
-                    stripped_graph.add_edge(edge[1], edge[0], {"weight": 1.0})
-                    edge_set.add((edge[1], edge[0]))
 
         if heuristic_type == "LVP":
             perturbation_offset = min(min(perturbation_list[picked_commodity_idx] for perturbation_list in perturbations.values()), 0)
@@ -417,12 +411,10 @@ def _repair_heuristic(graph : rw.PyGraph, paths : list[list[int]], infractions :
 
         for i in range(len(repaired_paths[picked_commodity_idx]) - 1):
             edge = (repaired_paths[picked_commodity_idx][i], repaired_paths[picked_commodity_idx][i+1])
-            if edge in edge_set:
+            if stripped_graph.has_edge(edge[0], edge[1]):
                 stripped_graph.remove_edge(edge[0], edge[1])
-                edge_set.remove(edge)
-            elif (edge[1], edge[0]) in edge_set:
-                stripped_graph.remove_edge(edge[1], edge[0])
-                edge_set.remove((edge[1], edge[0]))
+            else:
+                raise ValueError("Edge not found in stripped graph despite solved by Dijkstra.")
 
     return repaired_paths
 
@@ -452,7 +444,7 @@ def _update_particle(particle: dict, parameters: dict, subgradient: dict, paths:
     random_factor_p = random.random()
 
     path_dict = _path_dict_creator(paths)
-    subgradient_norm = float(np.linalg.norm(list(subgradient.values())))
+    subgradient_norm = float(np.linalg.norm(list(subgradient.values())))**2
 
     for edge in _edge_generator(particle):
         lambda_velocity = particle["lambda_velocity"][edge]
@@ -462,9 +454,9 @@ def _update_particle(particle: dict, parameters: dict, subgradient: dict, paths:
 
         # Equation (13)
         first_factor = parameters["velocity_factor"] * lambda_velocity
-        second_factor = random_factor_l * particle["subgradient_factor"] * (parameters["upper_bound"] - parameters["lower_bound"]) * subgrad_value / subgradient_norm
+        second_factor = random_factor_l * particle["subgradient_factor"] * (parameters["upper_bound"] - particle["lower_bound"]) * subgrad_value / subgradient_norm
         third_factor = random_factor_g * parameters["global_factor"] * (best_lambda_value - lambda_value)
-        
+
         new_lambda_velocity = first_factor + second_factor + third_factor
         particle["lambda_velocity"][edge] = new_lambda_velocity
 

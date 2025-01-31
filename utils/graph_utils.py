@@ -2,6 +2,8 @@ import networkx as nx
 import rustworkx as rw
 import matplotlib.pyplot as plt
 import random
+import warnings
+import numpy as np
 
 def convert_rustworkx_to_networkx(graph : rw.PyGraph) -> nx.Graph:
     '''
@@ -125,3 +127,61 @@ def generate_collated_node_pairs(node_range : tuple[int, int], n_intracluster : 
                 remaining_nodes[j].remove(target)
     
     return pairs
+
+def generate_collated_graph(n_clusters : int, cluster_size : int, average_degree_cluster : float = 6.0, min_degree : int = 2) -> rw.PyGraph:
+    '''
+        Generates a collated graph with the specified number of clusters and nodes per cluster.
+    '''
+
+    # Since the function generates intercluster connections without considering average_degree_cluster, 
+    # it is possible to generate a graph with a much higher degree than expected when the number of clusters is high compared to the cluster size.
+    min_connections_degree = (average_degree_cluster) + (n_clusters*(n_clusters-1)) / (n_clusters*cluster_size)
+    if average_degree_cluster < (min_connections_degree - average_degree_cluster + 1) / 2:
+        warnings.warn(f"Warning: Average degree per cluster ({average_degree_cluster}) will differ a lot from the total degree (~{min_connections_degree}) because of a high number of clusters per cluster size ratio.")
+    
+    if 2*min_degree > average_degree_cluster:
+        raise ValueError("Minimum degree must be less than half of the average degree per cluster.")
+
+    if average_degree_cluster > cluster_size:
+        raise ValueError("Average degree per cluster must be less than the cluster size.")
+    
+
+    graph = rw.PyGraph()
+
+    # Generate the clusters and immediately connect the nodes to ensure min_degree.
+    for i in range(n_clusters):
+        for j in range(cluster_size):
+            graph.add_node(i * cluster_size + j)
+            current_degree = 0
+            while current_degree < min_degree and j > current_degree:
+                # Create a weighted list to prefer higher numbers.
+                # This ensures an even distribution of edges, because otherwise the first nodes would have a higher degree, being picked more often.
+                choices = list(range(i * cluster_size, i * cluster_size + j))
+                weights = np.logspace(1, 1+min_degree, len(choices))
+                random_node = random.choices(choices, weights=weights, k=1)[0]
+                if graph.has_edge(i * cluster_size + j, random_node):
+                    continue
+                graph.add_edge(i * cluster_size + j, random_node, None)
+                current_degree += 1
+        
+    total_cluster_connections = int(average_degree_cluster * cluster_size / 2)
+
+    # Add extra intra-cluster connections.
+    for i in range(n_clusters):
+        current_cluster_connections = (cluster_size - 1)*min_degree
+        while current_cluster_connections < total_cluster_connections:
+            random_node_1 = random.choice(range(i * cluster_size, (i+1) * cluster_size))
+            random_node_2 = random.choice(range(i * cluster_size, (i+1) * cluster_size))
+            if random_node_1 == random_node_2:
+                continue
+            graph.add_edge(random_node_1, random_node_2, None)
+            current_cluster_connections += 1
+    
+    # Add inter-cluster connections.
+    for i in range(n_clusters):
+        for j in range(i+1, n_clusters):
+            random_node_1 = random.choice(range(i * cluster_size, (i+1) * cluster_size))
+            random_node_2 = random.choice(range(j * cluster_size, (j+1) * cluster_size))
+            graph.add_edge(random_node_1, random_node_2, None)
+
+    return graph

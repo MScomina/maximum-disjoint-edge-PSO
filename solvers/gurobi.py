@@ -1,10 +1,10 @@
 import gurobipy as gp
 import rustworkx as rw
 
-MAX_TIME = 3600*8
+MAX_SECONDS = 3600*8
 VERBOSE = True
 
-def generate_gurobi_model(graph : rw.PyGraph, commodity_pairs : list[tuple[int, int]], name : str = "MEDP", verbose : bool = VERBOSE) -> gp.Model:
+def generate_gurobi_model(graph : rw.PyGraph, commodity_pairs : list[tuple[int, int]], name : str = "MEDP", verbose : bool = VERBOSE, max_seconds : int = MAX_SECONDS) -> gp.Model:
     '''
         Generates a Gurobi model for the MEDP given the graph and the commodity pairs, where commodity pairs are tuples of the form (source_node, target_node).
         Note: This is the most de-facto implementation of the model, as it directly follows the paper's formulation.
@@ -72,12 +72,12 @@ def generate_gurobi_model(graph : rw.PyGraph, commodity_pairs : list[tuple[int, 
     '''
         Set Gurobi parameters.
     '''
-    model.setParam(gp.GRB.Param.TimeLimit, 3600*8)
+    model.setParam(gp.GRB.Param.TimeLimit, max_seconds)
     model.setParam(gp.GRB.Param.Presolve, 2)
 
     return model
 
-def generate_gurobi_model_efficient(graph : rw.PyGraph, commodity_pairs : list[tuple[int, int]], name : str = "MEDP", verbose : bool = VERBOSE) -> gp.Model:
+def generate_gurobi_model_efficient(graph : rw.PyGraph, commodity_pairs : list[tuple[int, int]], name : str = "MEDP", verbose : bool = VERBOSE, max_seconds : int = MAX_SECONDS) -> gp.Model:
     '''
         Generates a Gurobi model for the MEDP given the graph and the commodity pairs, where commodity pairs are tuples of the form (source_node, target_node).
         Note: This function is different from generate_gurobi_model because it directly implements only the variables that are actually part of the graph.
@@ -90,7 +90,7 @@ def generate_gurobi_model_efficient(graph : rw.PyGraph, commodity_pairs : list[t
     if isinstance(graph, rw.PyDiGraph):
         graph = graph.to_undirected()
 
-    adjacency_list = {int(node): {int(neighbor) for neighbor in graph.neighbors(int(node))} for node in graph.nodes()}
+    adjacency_list = {int(node): {int(neighbor) for neighbor in graph.neighbors(int(node))} for node in graph.node_indexes()}
 
     model = gp.Model(name)
 
@@ -157,7 +157,7 @@ def generate_gurobi_model_efficient(graph : rw.PyGraph, commodity_pairs : list[t
         Set Gurobi parameters.
     '''
     #model.setParam(gp.GRB.Param.NodefileStart, 0.5)
-    model.setParam(gp.GRB.Param.TimeLimit, MAX_TIME)
+    model.setParam(gp.GRB.Param.TimeLimit, max_seconds)
     #model.setParam(gp.GRB.Param.Threads, 4)
     model.setParam(gp.GRB.Param.Presolve, 2)
     if verbose:
