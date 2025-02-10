@@ -153,3 +153,6 @@ Makefile
 .pylance.*
 
 gurobi/
+data/generated/
+*.txt
+!requirements.txt
