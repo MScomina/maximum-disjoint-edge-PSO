@@ -19,8 +19,7 @@ def convert_rustworkx_to_networkx(graph : rw.PyGraph) -> nx.Graph:
 
 def draw_graph(graph : nx.Graph | rw.PyGraph):
     '''
-        Draws a graph using networkx and matplotlib.
-        Converts rustworkx graphs to networkx graphs if necessary.
+        Graph drawing utility.
     '''
     if type(graph) == rw.PyGraph:
         graph = convert_rustworkx_to_networkx(graph)
@@ -28,9 +27,10 @@ def draw_graph(graph : nx.Graph | rw.PyGraph):
         graph = graph.to_undirected()
     nx.draw(graph, with_labels=True, node_size=50)
     plt.show()
+    plt.close()
 
 
-def get_graph_info(graph : nx.DiGraph) -> dict[str, int | float | tuple]:
+def get_graph_info(graph : nx.DiGraph) -> dict[str, int | float]:
     '''
         Returns information about the graph:
             - Number of nodes ("nodes")
@@ -71,15 +71,15 @@ def get_graph_info(graph : nx.DiGraph) -> dict[str, int | float | tuple]:
     }
 
 
-def generate_unique_node_pairs(node_range : tuple[int, int], n : int) -> list[tuple[int, int]]:
+def generate_unique_node_pairs(node_range : tuple[int, int], amount : int) -> list[tuple[int, int]]:
     '''
-        Generates a list of unique node pairs.
+        Generates a list of random unique node pairs.
     '''
-    if n > (node_range[1] - node_range[0] + 1) // 2:
+    if amount > (node_range[1] - node_range[0] + 1) // 2:
         raise ValueError("Not enough unique nodes to generate the required number of pairs without overlap.")
     non_selected_nodes = list(range(*node_range))
     pairs = []
-    for _ in range(n):
+    for _ in range(amount):
         source = random.choice(non_selected_nodes)
         non_selected_nodes.remove(source)
         target = random.choice(non_selected_nodes)
@@ -87,16 +87,17 @@ def generate_unique_node_pairs(node_range : tuple[int, int], n : int) -> list[tu
         pairs.append((source, target))
     return pairs
 
-def generate_collated_node_pairs(node_range : tuple[int, int], n_intracluster : int, n_intercluster : int, n_clusters : int = 10) -> list[tuple[int, int]]:
+def generate_collated_node_pairs(node_range : tuple[int, int], amount_intracluster : int, amount_intercluster : int,
+                                 n_clusters : int = 10) -> list[tuple[int, int]]:
     '''
         Generates a list of nodes that forces intra-cluster and inter-cluster connections:
 
-        - n_intracluster: Number of intra-cluster connections for each cluster. <br>
-        - n_intercluster: Number of inter-cluster connections for each pair of clusters. <br>
+        - amount_intracluster: Number of intra-cluster connections for each cluster.
+        - amount_intercluster: Number of inter-cluster connections for each pair of clusters.
         
         Note: It is assumed that the cluster nodes are sorted to be contiguous (i.e. cluster 0 nodes are 0, 1, 2, ..., cluster 1 nodes are n, n+1, n+2, ...).
     '''
-    total_nodes = n_intracluster * n_clusters * 2 + (n_intercluster * n_clusters * (n_clusters-1))
+    total_nodes = amount_intracluster * n_clusters * 2 + (amount_intercluster * n_clusters * (n_clusters-1))
     if total_nodes > (node_range[1] - node_range[0] + 1):
         raise ValueError("Not enough unique nodes to generate the required number of pairs without overlap.")
     
@@ -105,7 +106,7 @@ def generate_collated_node_pairs(node_range : tuple[int, int], n_intracluster : 
     pairs : list[tuple[int, int]] = []
     
     for i in range(n_clusters):
-        pairs += generate_unique_node_pairs((i*size_cluster, (i+1)*size_cluster-1), n_intracluster)
+        pairs += generate_unique_node_pairs((i*size_cluster, (i+1)*size_cluster-1), amount_intracluster)
 
     remaining_nodes : list[list[int]] = [
         list(range(i * size_cluster, (i + 1) * size_cluster)) for i in range(n_clusters)
@@ -119,7 +120,7 @@ def generate_collated_node_pairs(node_range : tuple[int, int], n_intracluster : 
 
     for i in range(n_clusters):
         for j in range(i+1, n_clusters):
-            for _ in range(n_intercluster):
+            for _ in range(amount_intercluster):
                 source = random.choice(remaining_nodes[i])
                 target = random.choice(remaining_nodes[j])
                 pairs.append((source, target))
@@ -128,9 +129,13 @@ def generate_collated_node_pairs(node_range : tuple[int, int], n_intracluster : 
     
     return pairs
 
-def generate_collated_graph(n_clusters : int, cluster_size : int, average_degree_cluster : float = 6.0, min_degree : int = 2) -> rw.PyGraph:
+def generate_collated_graph(n_clusters : int, cluster_size : int, average_degree_cluster : float = 5.0, min_degree : int = 2) -> rw.PyGraph:
     '''
         Generates a collated graph with the specified number of clusters and nodes per cluster.
+
+        A collated graph in this case is a graph composed by n subgraphs, each connected to each other by a single edge.
+        This ensures that the maximum amount of nodes that are connect-able between each pair of subgraphs without reusing the edge is 1, 
+        given a requirement to connect them all to each other.
     '''
 
     # Since the function generates intercluster connections without considering average_degree_cluster, 
