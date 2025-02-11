@@ -19,18 +19,20 @@ VELOCITY_DECAY = 0.01
 PERTURBATION_DECAY = 0.5
 
 SWARM_SIZE = 8
-EPSILON = 0.01
 
-# Constraints
+LBC = 10
+
+# Algorithm constraints
 MAX_SECONDS = 3600*8
 MAX_ITERATIONS = 1000
-LBC = 10
+UPDATE_THRESHOLD = 50
+EPSILON = 0.0001
 
 HEURISTIC_TYPE = "LVP"
 HEURISTIC_TYPES = ["RAND", "LVA", "LVP"]
 
 SHOULD_PRINT = True
-PRINT_FREQUENCY = 1
+PRINT_FREQUENCY = 10
 
 PARALLEL = True
 
@@ -38,7 +40,8 @@ PARALLEL = True
 def LaPSO_MEDP(graph : rw.PyGraph, commodity_pairs : list[tuple[int, int]], max_seconds : int = MAX_SECONDS, max_iterations : int = MAX_ITERATIONS,
                initial_velocity_factor : float = INITIAL_VELOCITY_FACTOR, final_velocity_factor : float = FINAL_VELOCITY_FACTOR, 
                velocity_decay : float = VELOCITY_DECAY, global_factor : float = GLOBAL_FACTOR, subgradient_factor : float = SUBGRADIENT_FACTOR, 
-               perturbation_factor : float = PERTURBATION_FACTOR, beta_subg_factor : float = BETA_SUBG_FACTOR, swarm_size : int = SWARM_SIZE) -> tuple[int, dict]:
+               perturbation_factor : float = PERTURBATION_FACTOR, beta_subg_factor : float = BETA_SUBG_FACTOR, swarm_size : int = SWARM_SIZE,
+               verbose : bool = SHOULD_PRINT, print_frequency : int = PRINT_FREQUENCY) -> tuple[tuple[int, int], dict]:
     '''
         Solves the Minimum Edge Disjoint Paths problem using the LaPSO algorithm.
 
@@ -66,14 +69,16 @@ def LaPSO_MEDP(graph : rw.PyGraph, commodity_pairs : list[tuple[int, int]], max_
         "upper_bound" : 0,
         "iteration" : 0,
         "best_solution" : None,
-        "best_path" : []
+        "best_path" : [],
+        "last_update" : 0
     }
 
     start_time = time.time()
 
     while time.time() - start_time < max_seconds \
         and parameters["iteration"] < max_iterations \
-        and (parameters["iteration"] == 0 or abs((parameters["upper_bound"]-int(parameters["lower_bound"]))/(parameters["upper_bound"]+1e-6)) > EPSILON):
+        and (parameters["iteration"] == 0 or abs((int(parameters["lower_bound"])-parameters["upper_bound"])/(parameters["lower_bound"]+1e-6)) > EPSILON) \
+        and parameters["last_update"] < UPDATE_THRESHOLD:
         
         particles = _particle_swarm_step(
             graph=graph, 
@@ -81,18 +86,24 @@ def LaPSO_MEDP(graph : rw.PyGraph, commodity_pairs : list[tuple[int, int]], max_
             particles=particles,
             parameters=parameters
         )
+
         parameters["iteration"] += 1
-        if SHOULD_PRINT:
-            if (parameters["iteration"]+1) % PRINT_FREQUENCY == 0:
+        parameters["last_update"] += 1
+
+        if verbose:
+            if (parameters["iteration"]+1) % print_frequency == 0:
                 print(f"Iteration {parameters['iteration']} - Best solution: {parameters['upper_bound']}-{int(parameters['lower_bound'])}) - Time elapsed: {time.time() - start_time}")
 
     output = {}
     for commodity, (source, target) in enumerate(commodity_pairs):
         output[(source, target)] = parameters["best_path"][commodity]
-    return (parameters["upper_bound"], output)
+    return ((parameters["upper_bound"], int(parameters["lower_bound"])), output)
 
 
 def _process_particle(graph : rw.PyGraph, commodity_pairs, particle, parameters):
+    '''
+        Processes a single particle in the LaPSO algorithm.
+    '''
     relaxed_base_graph = _generate_base_relaxed_graph(particle)
     commodity_sum = 0
 
@@ -149,6 +160,7 @@ def _process_particle(graph : rw.PyGraph, commodity_pairs, particle, parameters)
 
     if current_relaxed_solution < parameters["lower_bound"]:
         parameters["lower_bound"] = current_relaxed_solution
+        parameters["last_update"] = 0
 
     infractions = _feasibility_check(paths)
     if sum(infractions) > 0:
@@ -162,13 +174,18 @@ def _process_particle(graph : rw.PyGraph, commodity_pairs, particle, parameters)
             parameters["upper_bound"] = connected_commodities
             parameters["best_particle"] = copy.deepcopy(particle)
             parameters["best_path"] = copy.deepcopy(paths)
+            parameters["last_update"] = 0
 
     _update_particle(particle, parameters, subgradient, paths)
     
     return particle, parameters
 
 def _particle_swarm_step(graph : rw.PyGraph, commodity_pairs : list[tuple[int, int]], particles : dict, parameters : dict, parallel : bool = PARALLEL):
+    '''
+        Processes all particles in the LaPSO algorithm.
 
+        Parallelizes the processing of the particles if the PARALLEL flag is set to True.
+    '''
     if parallel:
         with concurrent.futures.ProcessPoolExecutor() as executor:
             futures = [executor.submit(_process_particle, graph, commodity_pairs, particle, parameters) for particle in particles]
@@ -191,6 +208,8 @@ def _particle_swarm_step(graph : rw.PyGraph, commodity_pairs : list[tuple[int, i
             parameters["upper_bound"] = updated_parameters["upper_bound"]
             parameters["best_particle"] = updated_parameters["best_particle"]
             parameters["best_path"] = updated_parameters["best_path"]
+        if updated_parameters["last_update"] < parameters["last_update"]:
+            parameters["last_update"] = updated_parameters["last_update"]
 
     parameters["velocity_factor"] = _current_velocity_factor(
         parameters["iteration"], 
@@ -205,12 +224,14 @@ def _particle_swarm_step(graph : rw.PyGraph, commodity_pairs : list[tuple[int, i
 def _initialize_particles(graph : rw.PyGraph, n_commodities : int, swarm_size : int, subgradient_factor : float = SUBGRADIENT_FACTOR) -> list[dict]:
     '''
         Initializes the particles as a list of dictionaries, where each dictionary (particle) contains the following:
-        - lambda: edge weights of the graph.
-        - perturbation: list of perturbations for each edge, where the list is of size n_commodities.
-        - lambda_velocity: velocity of the lambda values, as per PSO.
-        - perturbation_velocity: velocity of the perturbation values, as per PSO.
-        - subgradient_factor: factor to be used in the subgradient calculation.
-        - lower_bound: current lower bound of the particle.
+        - lambda: Edge weights of the graph.
+        - perturbation: List of perturbations for each edge, where the list is of size n_commodities.
+        - lambda_velocity: Velocity of the lambda values, as per PSO.
+        - perturbation_velocity: Velocity of the perturbation values, as per PSO.
+        - subgradient_factor: Factor to be used in the subgradient calculation.
+        - lower_bound: Current lower bound of the particle.
+        - upper_bound: Current upper bound of the particle.
+        - iterations_since_bound_update: Number of iterations since the last lower bound update.
     '''
     particles = []
 
@@ -254,7 +275,7 @@ def _generate_base_relaxed_graph(particle : dict) -> rw.PyGraph:
 
 def _update_graph_weights(graph : rw.PyGraph, particle : dict, commodity_number : int, perturbated : bool = True) -> None:
     '''
-        Updates the graph weights in-place according to the lambda values of the particle.
+        Updates the graph weights in-place according to the lambda values of the particle and the specific perturbation of the given commodity.
     '''
     if perturbated:
         perturbation_offset = min(min(perturbation_list[commodity_number] for perturbation_list in particle["perturbation"].values()), 0)
@@ -296,7 +317,7 @@ def _path_dict_creator(paths : list[list[int]]) -> dict[tuple[int, int], int]:
 
 def _feasibility_check(paths : list[list[int]]) -> list[int]:
     '''
-        Given a list of paths, checks for the number of infractions (same edge used more than once) for each path.
+        Given a list of paths, checks for the number of infractions for each path.
         An infraction is defined as a pair of edges that are used more than once in the paths.
 
         E.g.:
@@ -319,14 +340,15 @@ def _feasibility_check(paths : list[list[int]]) -> list[int]:
 def _repair_heuristic(graph : rw.PyGraph, paths : list[list[int]], infractions : list[int], perturbations : dict[tuple[int, int], list[float]] = None,
                      heuristic_type : str = HEURISTIC_TYPE) -> list[list[int]]:
     '''
-        Given a list of paths and the number of infractions for each path, repairs the paths by removing the infractions.
+        Given a graph, a list of paths and the number of infractions for each path, tries to repair the paths by rerouting them onto non-used edges.
 
-        The repair is done using a heuristic, which can be one of the following:
+        The repair is done via a greedy approach (Dijkstra on free edges), with the following variations:
         - RAND: Randomly picks a commodity and tries to repair the path.
-        - LVA: Largest Violation Arbitrary, picks the commodity with the largest number of infractions and tries to repair it.
+        - LVA: Largest Violation Arbitrary, picks the commodity with the largest number of infractions and tries to repair it first (weights are all set to 1.0).
         - LVP: Largest Violation Perturbation, picks the commodity with the largest number of infractions and tries to repair it using the perturbations as graph weights.
-    
-        All of the repairs are attempted using Dijkstra's algorithm to find the shortest path between the source and target nodes.
+        Because of how the perturbations are computed, they are good indicators of the "likelihood" of a path being used.
+
+        If Dijkstra fails, the path is simply excluded and assumed to not be connectable.
     '''
 
     if heuristic_type not in HEURISTIC_TYPES:
@@ -340,7 +362,7 @@ def _repair_heuristic(graph : rw.PyGraph, paths : list[list[int]], infractions :
     '''
         Create a stripped graph with the edges that are not in the repaired paths.
         The idea is that using this graph and adding the edges back each time the 
-        computation is faster than just copying the graph over and over for big graphs.
+        computation is faster than just copying the graph over and over for big instances.
     '''
     current_path = []
     stripped_graph = rw.PyGraph(multigraph=False)

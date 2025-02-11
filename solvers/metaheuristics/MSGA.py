@@ -6,8 +6,11 @@ import rustworkx as rw
 
 MAX_SECONDS = 3600*8
 MAX_ITER = 2500
+UPDATE_THRESHOLD = 300
+VERBOSE = True
 
-def MSGA_MEDP(graph : rw.PyGraph, commodity_pairs : list[tuple[int, int]], n_iter : int = MAX_ITER, max_seconds : int = MAX_SECONDS) -> tuple[int, dict]:
+def MSGA_MEDP(graph : rw.PyGraph, commodity_pairs : list[tuple[int, int]], n_iter : int = MAX_ITER, 
+              max_seconds : int = MAX_SECONDS, update_threshold : int = UPDATE_THRESHOLD, verbose : bool = VERBOSE) -> tuple[tuple[int, int], dict]:
     '''
         Multiple Start Greedy Algorithm for the Minimum Edge Disjoint Paths problem.
     '''
@@ -19,8 +22,9 @@ def MSGA_MEDP(graph : rw.PyGraph, commodity_pairs : list[tuple[int, int]], n_ite
 
     start_time = time.time()
     iter_count = 0
+    last_update = 0
 
-    while time.time() - start_time < max_seconds and iter_count < n_iter:
+    while time.time() - start_time < max_seconds and iter_count < n_iter and last_update < update_threshold:
 
         current_solution : int = 0
         current_paths : dict[tuple[int, int], list[int]] = {}
@@ -45,8 +49,12 @@ def MSGA_MEDP(graph : rw.PyGraph, commodity_pairs : list[tuple[int, int]], n_ite
                 continue
             
         if current_solution > best_solution:
+            if verbose:
+                print(f"New best solution found (MSGA): {current_solution}")
             best_solution = current_solution
             best_paths = current_paths
+            last_update = 0
         iter_count += 1
+        last_update += 1
     
-    return best_solution, best_paths
+    return (best_solution, len(commodity_pairs)), best_paths

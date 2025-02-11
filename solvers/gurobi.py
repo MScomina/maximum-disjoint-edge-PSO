@@ -7,22 +7,18 @@ VERBOSE = True
 def generate_gurobi_model(graph : rw.PyGraph, commodity_pairs : list[tuple[int, int]], name : str = "MEDP", verbose : bool = VERBOSE, max_seconds : int = MAX_SECONDS) -> gp.Model:
     '''
         Generates a Gurobi model for the MEDP given the graph and the commodity pairs, where commodity pairs are tuples of the form (source_node, target_node).
+        
         Note: This is the most de-facto implementation of the model, as it directly follows the paper's formulation.
         The issue is that it generates a lot of redundant variables, especially for big graphs. 
-        They usually get trimmed by Gurobi's presolve, but the program may still go out of memory before that.
+        They usually get trimmed by Gurobi's presolve, but the program may still go out of memory before that has time to take place.
     '''
 
     n_nodes = graph.num_nodes()
     n_commodities = len(commodity_pairs)
-    graph_edges = set(graph.edges())
+    graph_edges = set(graph.edge_list())
 
 
     model = gp.Model(name)
-
-    if verbose:
-        model.setParam("OutputFlag", 1)
-    else:
-        model.setParam("OutputFlag", 0)
 
     '''
         Constraint number (7): Decision variables are binary.
@@ -69,8 +65,14 @@ def generate_gurobi_model(graph : rw.PyGraph, commodity_pairs : list[tuple[int, 
     '''
     model.setObjective(gp.quicksum(x.sum(start, "*", k) for k, (start, _) in enumerate(commodity_pairs)), gp.GRB.MAXIMIZE)
 
+    if verbose:
+        model.setParam("OutputFlag", 1)
+    else:
+        model.setParam("OutputFlag", 0)
+        model.setParam("LogToConsole", 0)
+
     '''
-        Set Gurobi parameters.
+        Set Gurobi parameters for time limit and presolve behavior.
     '''
     model.setParam(gp.GRB.Param.TimeLimit, max_seconds)
     model.setParam(gp.GRB.Param.Presolve, 2)
@@ -153,16 +155,16 @@ def generate_gurobi_model_efficient(graph : rw.PyGraph, commodity_pairs : list[t
         gp.GRB.MAXIMIZE
     )
 
-    '''
-        Set Gurobi parameters.
-    '''
-    #model.setParam(gp.GRB.Param.NodefileStart, 0.5)
-    model.setParam(gp.GRB.Param.TimeLimit, max_seconds)
-    #model.setParam(gp.GRB.Param.Threads, 4)
-    model.setParam(gp.GRB.Param.Presolve, 2)
     if verbose:
         model.setParam("OutputFlag", 1)
     else:
         model.setParam("OutputFlag", 0)
+        model.setParam("LogToConsole", 0)
+
+    '''
+        Set Gurobi parameters for time limit and presolve behavior.
+    '''
+    model.setParam(gp.GRB.Param.TimeLimit, max_seconds)
+    model.setParam(gp.GRB.Param.Presolve, 2)
 
     return model
