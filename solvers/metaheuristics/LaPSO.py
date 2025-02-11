@@ -73,9 +73,9 @@ def LaPSO_MEDP(graph : rw.PyGraph, commodity_pairs : list[tuple[int, int]], max_
         "last_update" : 0
     }
 
-    start_time = time.time()
+    start_time = time.perf_counter()
 
-    while time.time() - start_time < max_seconds \
+    while time.perf_counter() - start_time < max_seconds \
         and parameters["iteration"] < max_iterations \
         and (parameters["iteration"] == 0 or abs((int(parameters["lower_bound"])-parameters["upper_bound"])/(parameters["lower_bound"]+1e-6)) > EPSILON) \
         and parameters["last_update"] < UPDATE_THRESHOLD:
@@ -92,7 +92,7 @@ def LaPSO_MEDP(graph : rw.PyGraph, commodity_pairs : list[tuple[int, int]], max_
 
         if verbose:
             if (parameters["iteration"]+1) % print_frequency == 0:
-                print(f"Iteration {parameters['iteration']} - Best solution: {parameters['upper_bound']}-{int(parameters['lower_bound'])}) - Time elapsed: {time.time() - start_time}")
+                print(f"Iteration {parameters['iteration']} - Best solution: {parameters['upper_bound']}-{int(parameters['lower_bound'])}) - Time elapsed: {time.perf_counter() - start_time}")
 
     output = {}
     for commodity, (source, target) in enumerate(commodity_pairs):

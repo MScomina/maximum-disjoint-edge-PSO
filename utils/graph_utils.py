@@ -1,5 +1,7 @@
 import networkx as nx
 import rustworkx as rw
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import random
 import warnings

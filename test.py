@@ -103,10 +103,10 @@ def main():
 
     graphs = load_all_graphs("./data/generated/test")
 
-    start_time = time.time()   
+    start_time = time.perf_counter()   
 
     for graph in graphs:
-        test_time = time.time()
+        test_time = time.perf_counter()
         print(f"Testing graph {graph.attrs['name']}:")
         print(get_graph_info(graph), "\n")
 
@@ -120,11 +120,11 @@ def main():
         )
 
         pp.pprint(stats)
-        print(f"\nTest took {time.time() - test_time:.3f} seconds.\n")
+        print(f"\nTest took {time.perf_counter() - test_time:.3f} seconds.\n")
         print("-"*80)
         print("\n")
 
-    print(f"Total time: {time.time() - start_time:.3f} seconds.")
+    print(f"Total time: {time.perf_counter() - start_time:.3f} seconds.")
 
 
 if __name__ == "__main__":

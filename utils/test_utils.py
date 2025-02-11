@@ -64,24 +64,24 @@ def test_graph(graph : rw.PyGraph, solvers : list[str] = SOLVERS, n_tests : int 
                 pairs = custom_pairs
             
             for solver in SOLVERS:
-                time_start = time.time()
+                time_start = time.perf_counter()
                 match solver:
                     case "gurobi":
                         model = generate_gurobi_model(graph, pairs, verbose=verbose, max_seconds=max_algorithm_execution_time_sec)
                         model.optimize()
                         result = (model.ObjVal, model.ObjBound)
-                        algorithm_times[solver].append(time.time() - time_start)
+                        algorithm_times[solver].append(time.perf_counter() - time_start)
                     case "gurobi_efficient":
                         model = generate_gurobi_model_efficient(graph, pairs, verbose=verbose, max_seconds=max_algorithm_execution_time_sec)
                         model.optimize()
                         result = (model.ObjVal, model.ObjBound)
-                        algorithm_times[solver].append(time.time() - time_start)
+                        algorithm_times[solver].append(time.perf_counter() - time_start)
                     case "msga":
                         result, _ = MSGA_MEDP(graph, pairs, verbose=verbose, max_seconds=max_algorithm_execution_time_sec)
-                        algorithm_times[solver].append(time.time() - time_start)
+                        algorithm_times[solver].append(time.perf_counter() - time_start)
                     case "lapso":
                         result, _ = LaPSO_MEDP(graph, pairs, verbose=verbose, max_seconds=max_algorithm_execution_time_sec, print_frequency=1)
-                        algorithm_times[solver].append(time.time() - time_start)
+                        algorithm_times[solver].append(time.perf_counter() - time_start)
                     case _:
                         raise Exception("Solver not supported.")
                 

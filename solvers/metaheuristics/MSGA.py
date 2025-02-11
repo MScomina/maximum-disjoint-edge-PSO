@@ -20,11 +20,11 @@ def MSGA_MEDP(graph : rw.PyGraph, commodity_pairs : list[tuple[int, int]], n_ite
     best_solution : int = 0
     best_paths : dict[tuple[int, int], list[int]] = {}
 
-    start_time = time.time()
+    start_time = time.perf_counter()
     iter_count = 0
     last_update = 0
 
-    while time.time() - start_time < max_seconds and iter_count < n_iter and last_update < update_threshold:
+    while time.perf_counter() - start_time < max_seconds and iter_count < n_iter and last_update < update_threshold:
 
         current_solution : int = 0
         current_paths : dict[tuple[int, int], list[int]] = {}
