@@ -29,7 +29,7 @@ PERCENTAGE_NODES_USED = [0.66]
 # Verbosity of the algorithms. If true, shows all algorithm outputs.
 VERBOSE = False
 
-# If true, writes the output to output_test.txt instead of the console.
+# If true, writes the output to output_scalability.txt instead of the console.
 WRITE_TO_TEXT_FILE = True
 
 MAX_ALGORITHM_EXECUTION_TIME_SEC = 1200
