@@ -6,7 +6,9 @@ from solvers.gurobi import generate_gurobi_model, generate_gurobi_model_efficien
 from solvers.metaheuristics.MSGA import MSGA_MEDP
 from solvers.metaheuristics.LaPSO import LaPSO_MEDP
 
-from utils.graph_utils import generate_unique_node_pairs, generate_collated_node_pairs
+from utils.graph_utils import generate_unique_node_pairs, generate_collated_node_pairs, get_graph_info
+
+import gurobipy as gp
 
 
 SOLVERS = [
@@ -29,13 +31,25 @@ def test_graph(graph : rw.PyGraph, solvers : list[str] = SOLVERS, n_tests : int 
         Tests a single graph on all the algorithms N_TESTS times with randomized pairs.
     '''
 
+    if ("gurobi" in solvers or "gurobi_efficient" in solvers):
+        if verbose:
+            gp.setParam("OutputFlag", 1)
+        else:
+            gp.setParam("OutputFlag", 0)
+
     metrics = ["avg_time", "avg_connected_pairs", "avg_optimality_gap"]
 
-    statistics = {solver: {metric: 0 for metric in metrics} for solver in solvers}
+    if n_tests > 1:
+        metrics.append("std_time")
 
-    algorithm_times = {solver: [] for solver in solvers}
-    algorithm_connected_pairs = {solver: [] for solver in solvers}
-    algorithm_optimality_gap = {solver: [] for solver in solvers}
+    statistics = {percentage: {solver: {metric: 0 for metric in metrics} for solver in solvers} for percentage in percentage_nodes_used}
+
+    algorithm_times = {percentage: {solver: [] for solver in solvers} for percentage in percentage_nodes_used}
+    algorithm_connected_pairs = {percentage: {solver: [] for solver in solvers} for percentage in percentage_nodes_used}
+    algorithm_optimality_gap = {percentage: {solver: [] for solver in solvers} for percentage in percentage_nodes_used}
+
+    print(f"Testing graph {graph.attrs['name']}:")
+    print(get_graph_info(graph), "\n")
     
     for k in range(n_tests):
         for percentage in percentage_nodes_used:
@@ -63,39 +77,45 @@ def test_graph(graph : rw.PyGraph, solvers : list[str] = SOLVERS, n_tests : int 
             else:
                 pairs = custom_pairs
             
-            for solver in SOLVERS:
+            for solver in solvers:
                 time_start = time.perf_counter()
                 match solver:
                     case "gurobi":
                         model = generate_gurobi_model(graph, pairs, verbose=verbose, max_seconds=max_algorithm_execution_time_sec)
                         model.optimize()
                         result = (model.ObjVal, model.ObjBound)
-                        algorithm_times[solver].append(time.perf_counter() - time_start)
+                        algorithm_times[percentage][solver].append(time.perf_counter() - time_start)
+                        model.close()
                     case "gurobi_efficient":
                         model = generate_gurobi_model_efficient(graph, pairs, verbose=verbose, max_seconds=max_algorithm_execution_time_sec)
                         model.optimize()
                         result = (model.ObjVal, model.ObjBound)
-                        algorithm_times[solver].append(time.perf_counter() - time_start)
+                        algorithm_times[percentage][solver].append(time.perf_counter() - time_start)
+                        model.close()
                     case "msga":
                         result, _ = MSGA_MEDP(graph, pairs, verbose=verbose, max_seconds=max_algorithm_execution_time_sec)
-                        algorithm_times[solver].append(time.perf_counter() - time_start)
+                        algorithm_times[percentage][solver].append(time.perf_counter() - time_start)
                     case "lapso":
                         result, _ = LaPSO_MEDP(graph, pairs, verbose=verbose, max_seconds=max_algorithm_execution_time_sec, print_frequency=1)
-                        algorithm_times[solver].append(time.perf_counter() - time_start)
+                        algorithm_times[percentage][solver].append(time.perf_counter() - time_start)
                     case _:
-                        raise Exception("Solver not supported.")
+                        raise Exception(f"Solver {solver} not supported.")
                 
-                algorithm_connected_pairs[solver].append(result[0])
-                algorithm_optimality_gap[solver].append((result[1]-result[0])/result[1])
-
+                algorithm_connected_pairs[percentage][solver].append(result[0])
+                algorithm_optimality_gap[percentage][solver].append((result[1]-result[0])/result[1])
             
             if not custom_pairs:
                 print("done.")
-            
-    for solver in solvers:
-        statistics[solver]["avg_time"] = sum(algorithm_times[solver])/len(algorithm_times[solver])
-        statistics[solver]["avg_connected_pairs"] = sum(algorithm_connected_pairs[solver])/len(algorithm_connected_pairs[solver])
-        statistics[solver]["avg_optimality_gap"] = sum(algorithm_optimality_gap[solver])/len(algorithm_optimality_gap[solver])
 
+    gp.disposeDefaultEnv()
+            
+    for percentage in percentage_nodes_used:
+        for solver in solvers:
+            statistics[percentage][solver]["avg_time"] = sum(algorithm_times[percentage][solver])/len(algorithm_times[percentage][solver])
+            statistics[percentage][solver]["avg_connected_pairs"] = sum(algorithm_connected_pairs[percentage][solver])/len(algorithm_connected_pairs[percentage][solver])
+            statistics[percentage][solver]["avg_optimality_gap"] = sum(algorithm_optimality_gap[percentage][solver])/len(algorithm_optimality_gap[percentage][solver])
+            if "std_time" in metrics:
+                statistics[percentage][solver]["std_time"] = (sum([(time - statistics[percentage][solver]["avg_time"])**2 for time in algorithm_times[percentage][solver]])/len(algorithm_times[percentage][solver]))**0.5
+            statistics[percentage][solver]["times"] = algorithm_times[percentage][solver]
     print("\n")
     return statistics

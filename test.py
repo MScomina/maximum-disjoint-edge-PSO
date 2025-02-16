@@ -12,7 +12,6 @@ import random
 import gurobipy as gp
 
 from utils.dataset_parser import load_all_graphs
-from utils.graph_utils import get_graph_info
 from utils.dataset_generator import generate_save_default_graphs, save_graph_draw
 from utils.test_utils import test_graph
 
@@ -69,9 +68,6 @@ def example_graph():
     # Manually define the pairs of nodes to be connected.
     pairs = [(0, 8), (1, 9), (2, 10), (3, 11)]
 
-    print(f"Testing graph {graph.attrs['name']}:")
-    print(get_graph_info(graph), "\n")
-
     pprint.pprint(test_graph(
         graph,
         n_tests=1,
@@ -93,22 +89,21 @@ def main():
     if not VERBOSE:
         gp.setParam("OutputFlag", 0)
 
-    if SHOW_EXAMPLE_GRAPH:
-        example_graph()
-
     pp = pprint.PrettyPrinter(indent=4)
 
     if not os.path.exists("./data/generated/test"):
-        generate_save_default_graphs(test=True, seed=SEED)
+        generate_save_default_graphs(is_test_mode=True, seed=SEED)
+
+    if SHOW_EXAMPLE_GRAPH:
+        example_graph()
 
     graphs = load_all_graphs("./data/generated/test")
 
     start_time = time.perf_counter()   
 
     for graph in graphs:
+
         test_time = time.perf_counter()
-        print(f"Testing graph {graph.attrs['name']}:")
-        print(get_graph_info(graph), "\n")
 
         stats = test_graph(
             graph,
